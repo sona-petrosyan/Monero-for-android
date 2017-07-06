@@ -1,0 +1,150 @@
+#!/bin/bash
+
+BOOST=boost_1_64_0
+BOOST_VERSION=1.64.0
+SSL=openssl-1.0.2l
+
+BUILD_SSL=false
+BUILD_BOOST=false
+COPY=true
+
+if $BUILD_SSL; then
+    [ -d ${SSL} ] && rm -rf ${SSL}
+    [ -f "${SSL}.tar.gz" ] || wget https://www.openssl.org/source/${SSL}.tar.gz;
+    
+    if [ ! -f "${SSL}.tar.gz" ]; then
+        echo "Could not download OpenSSL. Please check your connection and the name of SSL."
+        exit 1
+    fi
+    tar xfz "${SSL}.tar.gz"
+fi
+
+if $BUILD_BOOST; then
+
+    [ -f "${BOOST}.tar.bz2" ] || wget https://sourceforge.net/projects/boost/files/boost/${BOOST_VERSION}/${BOOST}.tar.bz2/download -O ${BOOST}.tar.bz2
+    
+    [ -d ${BOOST} ] || tar xjf ${BOOST}.tar.bz2
+    if [ ! -d "${BOOST}" ]; then
+        echo "Could not download BOOST. Please check your connection and the name of BOOST."
+        exit 1
+    fi
+    cd $BOOST
+    [ -f ./b2 ] || ./bootstrap.sh
+    cd -
+fi
+
+NDK=$1
+if [ -z "$NDK" ]; then
+    echo "The NDK path should be specified as an argument."
+    exit 1
+fi
+shift
+
+if [ -z "$1" ]; then
+    ARCH=arm
+else
+    ARCH="$1"
+    shift
+fi
+
+if [ "${1,,}" == "debug" ]; then
+    BUILDTYPE=Debug
+    shift
+else
+    BUILDTYPE=Release
+    if [ "${1,,}" == "release" ]; then shift; fi
+fi
+
+TOOLS_ROOT=`pwd`
+
+case $ARCH in
+    arm)
+        SUFFIX="arm-linux-androideabi"
+        MONERO_ARCH=armv7-a
+        ANDROID_ABI=armeabi-v7a
+	BUILD_64=OFF
+	OPENSSL_ARCH=android-armeabi
+        ;;
+    arm64)
+        SUFFIX="aarch64-linux-android"
+        MONERO_ARCH=armv8-a
+        ANDROID_ABI=arm64-v8a
+	BUILD_64=ON
+	OPENSSL_ARCH=android64-aarch64
+        ;;
+    x86)
+        SUFFIX="i686-linux-android"
+        MONERO_ARCH=i686
+        ANDROID_ABI=x86
+	BUILD_64=OFF
+	OPENSSL_ARCH=android-x86
+        ;;
+    *)
+        echo "Unsupported architecture provided: $ARCH"
+        exit 1
+        ;;
+esac
+
+BOOST_ROOT=$TOOLS_ROOT/$BOOST
+BOOST_LIBRARYDIR=$TOOLS_ROOT/../libs/$ANDROID_ABI/boost
+INCLUDE_DIR=$TOOLS_ROOT/../include
+mkdir -p $INCLUDE_DIR
+OPENSSL_ROOT=$TOOLS_ROOT/../libs/$ANDROID_ABI/openssl
+
+export TOOLCHAIN=${TOOLS_ROOT}/android-toolchain/$ARCH
+
+echo "BUILDING ANDROID TOOLCHAIN ..."
+mkdir -p $TOOLS_ROOT/android-toolchain
+[ -f $TOOLCHAIN/bin/clang ] || $NDK/build/tools/make_standalone_toolchain.py \
+    --api 21 \
+    --stl=libc++ \
+    --arch $ARCH \
+    --install-dir $TOOLCHAIN \
+
+echo "BUILDING ANDROID TOOLCHAIN COMPLETED"
+
+export PATH=$TOOLCHAIN/bin:$TOOLCHAIN/$SUFFIX/bin:$PATH
+
+if $BUILD_BOOST; then
+    echo "BUILDING BOOST ..."
+    cd $BOOST
+    ./b2 --build-type=minimal link=static runtime-link=static --with-chrono --with-date_time --with-filesystem --with-program_options --with-regex --with-serialization --with-system --with-thread --build-dir=$BOOST_LIBRARYDIR --stagedir=$BOOST_LIBRARYDIR toolset=clang threading=multi threadapi=pthread target-os=android stage
+    #For Building Shared
+    #./b2 --build-type=minimal link=shared runtime-link=shared --with-chrono --with-date_time --with-filesystem --with-program_options --with-regex --with-serialization --with-system --with-thread --build-dir=$BOOST_LIBRARYDIR --stagedir=$BOOST_LIBRARYDIR toolset=clang threading=multi threadapi=pthread target-os=android stage
+    cd -
+    cp $BOOST/boost $INCLUDE_DIR/ -r
+    echo "BUILDING BOOST COMPLETED"
+fi
+
+#Building OPENSSL
+if $BUILD_SSL; then
+    echo "BUILDING SSL ..."
+    ./build-openssl4android.sh $OPENSSL_ARCH $ANDROID_ABI $TOOLCHAIN $SSL $OPENSSL_ROOT
+    echo "BUILDING SSL COMPLETED"
+fi
+
+MONERO_OUT_DIR=$TOOLS_ROOT/../monero/build/release.$ANDROID_ABI
+cd ../
+mkdir -p $MONERO_OUT_DIR
+cd $MONERO_OUT_DIR
+CC=clang CXX=clang++ CMAKE_CXX_FLAGS="-fPIC -std=c++11 -frtti -fexceptions" CMAKE_C_FLAGS="-fPIC" cmake -D BUILD_TESTS=OFF -D ARCH="$MONERO_ARCH" -D BUILD_SHARED_LIBS=ON -D STATIC=OFF -D BUILD_64=$BUILD_64 -D CMAKE_BUILD_TYPE=$BUILDTYPE -D ANDROID=true -D BUILD_TAG="android" -D BOOST_ROOT=$BOOST_ROOT -D BOOST_LIBRARYDIR=$BOOST_LIBRARYDIR/lib -D OPENSSL_CRYPTO_LIBRARY=$OPENSSL_ROOT/lib/libcrypto.a -D OPENSSL_SSL_LIBRARY=$OPENSSL_ROOT/lib/libssl.a -D OPENSSL_INCLUDE_DIR=$OPENSSL_ROOT/include ../.. 
+#For Building Shared
+#CC=clang CXX=clang++ cmake -D BUILD_TESTS=OFF -D ARCH="$MONERO_ARCH" -D STATIC=ON -D BUILD_64=$BUILD_64 -D CMAKE_BUILD_TYPE=$BUILDTYPE -D ANDROID=true -D BUILD_TAG="android" -D BOOST_ROOT=$BOOST_ROOT -D BOOST_LIBRARYDIR=$BOOST_LIBRARYDIR/lib -D OPENSSL_CRYPTO_LIBRARY=$OPENSSL_ROOT/lib/libcrypto.a -D OPENSSL_SSL_LIBRARY=$OPENSSL_ROOT/lib/libssl.a -D OPENSSL_INCLUDE_DIR=$OPENSSL_ROOT/include ../.. 
+make
+cd -
+
+#Copying libs to Monero Android Application
+if $COPY; then
+    OUTPUT_DIR=$TOOLS_ROOT/../MoneroTest/app/src/main/jniLibs/$ANDROID_ABI
+    if [ ! -d "${OUTPUT_DIR}" ]; then
+        echo "Could not find the Monero Android application..."
+        exit 1
+    fi
+    rm $OUTPUT_DIR/* -f
+    cp $BOOST_LIBRARYDIR/lib/* $OUTPUT_DIR/
+    cp $OPENSSL_ROOT/lib/*.a $OUTPUT_DIR/
+    cp $MONERO_OUT_DIR/*/*/*.so $OUTPUT_DIR/
+    cp $MONERO_OUT_DIR/*/*/*.a $OUTPUT_DIR/
+    cp $MONERO_OUT_DIR/*/*/*/*.so $OUTPUT_DIR/
+    cp $MONERO_OUT_DIR/*/*/*/*.a $OUTPUT_DIR/
+fi

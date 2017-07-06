@@ -1,0 +1,15 @@
+#!/bin/bash
+
+BOOST=boost_1_64_0
+BOOST_VERSION=1.64.0
+SSL=openssl-1.0.2l
+
+#rm ${BOOST}* -rf
+#rm ${SSL}* -rf
+rm ${BOOST} -rf
+rm ${SSL} -rf
+rm android-toolchain/ -rf
+rm ../libs -rf
+cd ../monero
+make clean
+cd -
