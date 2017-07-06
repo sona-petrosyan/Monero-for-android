@@ -4,8 +4,8 @@ BOOST=boost_1_64_0
 BOOST_VERSION=1.64.0
 SSL=openssl-1.0.2l
 
-BUILD_SSL=false
-BUILD_BOOST=false
+BUILD_SSL=true
+BUILD_BOOST=true
 COPY=true
 
 if $BUILD_SSL; then
